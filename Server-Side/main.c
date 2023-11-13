@@ -2,11 +2,25 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ws2tcpip.h>
 
 #define LOCAL_HOST "127.0.0.1"
 #define SERVER_PORT 5000
 #define BACKLOG 10
+#define MAX_CLIENTS 10
 //2000
+
+typedef struct {
+	SOCKET socket;
+	struct sockaddr_in address;
+} Client;
+
+Client clientList[MAX_CLIENTS];
+int client_num = 0;
+
+DWORD WINAPI handleClient(int clientId);
+void broadcastMessage(char buffer[]);
+
 int main() {
 
 	WSADATA wsaData;
@@ -22,11 +36,8 @@ int main() {
 		WSACleanup();
 		return 1;
 	}
-	struct sockaddr_in server_address;
-	server_address.sin_family = AF_INET;
-	server_address.sin_addr.s_addr = INADDR_ANY;
-	server_address.sin_port = htons(SERVER_PORT);
 
+	struct sockaddr_in server_address = { .sin_family = AF_INET, .sin_addr = INADDR_ANY, .sin_port = htons(SERVER_PORT) };
 	if (bind(server_descriptor, (struct sockaddr*)&server_address, sizeof(server_address)) == SOCKET_ERROR) {
 		perror("Couldn't bind server socket\n");
 		WSACleanup();
@@ -40,36 +51,48 @@ int main() {
 	}
 
 	printf("listening for connections\n");
-	char buffer[1024];
 	while (1) {
-		struct sockaddr_in clientAddr;
-		int clientAddrLen = sizeof(clientAddr);
+		if (client_num < MAX_CLIENTS) {
+			if ((clientList[client_num].socket = accept(server_descriptor, (struct sockaddr *)&clientList[client_num].address, NULL)) == SOCKET_ERROR) {
+				printf("Connection failed with: %d\n", WSAGetLastError());
+			}
 
-		// Accept incoming connections
-		SOCKET clientSocket = accept(server_descriptor, (struct sockaddr*)&clientAddr, &clientAddrLen);
-		if (clientSocket == INVALID_SOCKET) {
-			perror("Error accepting connection");
-			closesocket(server_descriptor);
-			WSACleanup();
-			return 1;
+			CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)handleClient, (LPVOID)client_num, 0, NULL);
+			client_num++;
 		}
-
-		printf("CONNECTED");
-		int recivedbytes = recv(clientSocket, buffer, sizeof(buffer), 0);
-		if (recivedbytes > 0) {
-			buffer[recivedbytes] = '\0';
-			printf("Received data: %s\n", buffer);
-		}
-		else {
-			printf("hello");
-		}
-
-		
-
-		// Handle the connection...
 	}
 	
 	closesocket(server_descriptor);
 	WSACleanup();
 	return 0;
+}
+
+DWORD WINAPI handleClient(int clientId) {
+	int receivedbytes;
+	char buffer[1024];
+	char ipBuffer[INET_ADDRSTRLEN];
+	while (1) { // I want the threads to continue listening for inc messages.
+		if ((receivedbytes = recv(clientList[clientId].socket, buffer, sizeof(buffer), 0)) <= 0) {
+
+			inet_ntop(AF_INET, &(clientList[clientId].address.sin_addr), ipBuffer, INET_ADDRSTRLEN);
+			printf("Client number %s:%d has disconnected.\n", ipBuffer, ntohs(clientList[clientId].address.sin_port));
+			closesocket(clientList[clientId].socket);
+			for (int i = clientId; i < client_num - 1; ++clientId) {
+				clientList[i] = clientList[i + 1];
+			}
+			--client_num;
+			break;
+		}
+		else if (receivedbytes < sizeof(buffer)) { // RECEIVED A MESSAGE
+			buffer[receivedbytes] = '\0';
+			broadcastMessage(buffer);
+		}
+	}
+}
+
+void broadcastMessage(char buffer[]) {
+	for (int i = 0; i < client_num; ++i) {
+		send(clientList[i].socket, buffer, strlen(buffer) + 1, SOCK_STREAM);
+		printf("Broadcasting: %s | to client: %d\n", buffer, i);
+	}
 }
