@@ -1,40 +1,23 @@
 #include <string.h>
 #include <WinSock2.h>
-#include <SDL.h>
-#include <SDL_ttf.h>
 #include <stdio.h>
+#include <windows.h>
 #include <stdlib.h>
-#include <time.h>
+#include "gui.h"
+#include "message.h"
+
 //2000
 #define DEBUG 1
-#define INIT_TEXT_POSX 20
-#define INIT_TEXT_POSY 520
-// #define ENTERKEY '\n'
 #define LOCAL_HOST "127.0.0.1"
+#define CONNECT_PORT 5000
+#define LINE_LENGTH 24
 
+void SendMessageFont(Message* message_p, SOCKET clientfd);
+void PrintReceivedMessages(SDL_Renderer* renderer, SDL_Surface* textSurface, SDL_Texture* textTexture, TTF_Font* font);
+DWORD WINAPI ReceiveMessage(LPVOID serverfd);
 
-static int WINDOW_WIDTH = 940;
-static int WINDOW_HEIGHT = 721;
-static int BUTTON_WIDTH = 65;
-static int BUTTON_HEIGHT = 65;
-
-static SDL_Color TEXT_COLOR = { 0, 0, 0 }; // White text color
-
-int TextPosX = INIT_TEXT_POSX;
-int TextPosY = INIT_TEXT_POSY;
-
-typedef struct {
-	int length;
-	char text[1024];
-	time_t timestamp;
-} Message;
-
-void GetUserMessage(SDL_Event event, Message *message_p);
-void FlushMessage(Message* message_p);
-void DrawTextFont(SDL_Renderer* renderer, SDL_Surface* textSurface, SDL_Texture* textTexture, TTF_Font* font, Message* message_p);
-void DrawButton(SDL_Renderer* renderer);
-void ButtonInput(SDL_Renderer* renderer, SDL_Event event);
-void SendMessageFont(Message* message_p);
+Message receivedMessageList[256];
+static int receivedMessagesCount = 0;
 
 int main(int argc, char* argv[]) {
 
@@ -97,12 +80,10 @@ int main(int argc, char* argv[]) {
 	}
 
 	SDL_StartTextInput();
-	
+
 	SDL_Event event_var;
 	int quit = 0;
-	struct sockaddr_in serverAddress; 
-	serverAddress.sin_family = AF_INET;
-	serverAddress.sin_port = htons(5000);
+	struct sockaddr_in serverAddress = { .sin_family = AF_INET, .sin_port = htons(5000) };
 	if (inet_pton(AF_INET, LOCAL_HOST, &serverAddress.sin_addr) != 1) {
 		perror("couldn't translate ip into host type");
 		SDL_DestroyRenderer(renderer);
@@ -130,6 +111,7 @@ int main(int argc, char* argv[]) {
 
 	Message init_mes = { .length = 0, .text[0] = '\0', .timestamp = time(NULL) };
 	Message* user_message = &init_mes;
+	CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)ReceiveMessage, (LPVOID) clientSocket, 0, NULL);
 
 	while (!quit) {
 		while (SDL_PollEvent(&event_var)) {
@@ -138,11 +120,8 @@ int main(int argc, char* argv[]) {
 				quit = 1;
 				break;
 			case SDL_KEYDOWN:
-				if (event_var.key.keysym.sym == SDLK_BACKSPACE ){
+				if (event_var.key.keysym.sym == SDLK_BACKSPACE) {
 					goto SDLINPUT;
-				}
-				else if (event_var.key.keysym.sym == SDLK_RETURN) {
-					TextPosY += 24;
 				}
 				break;
 			SDLINPUT: // most friendly way of dealing the case of backspace and many key presses that SDL_TEXTINPUT does not handle.
@@ -152,11 +131,11 @@ int main(int argc, char* argv[]) {
 			case SDL_MOUSEBUTTONDOWN:
 				if (DEBUG) {
 					int i = 0;
-					printf("x: %d | y: %d\n", event_var.motion.x, event_var.motion.y);
+					//printf("x: %d | y: %d\n", event_var.motion.x, event_var.motion.y);
 					for (; i < user_message->length; ++i) {
 						putchar(user_message->text[i]);
 					}
-					printf("%d", user_message->text[++i]);
+					//printf("%d", user_message->text[++i]);
 				}
 				int clickx = event_var.motion.x;
 				int clicky = event_var.motion.y;
@@ -172,6 +151,7 @@ int main(int argc, char* argv[]) {
 		SDL_RenderClear(renderer);
 		DrawTextFont(renderer, textSurface, textTexture, font, user_message);
 		DrawButton(renderer);
+		PrintReceivedMessages(renderer, textSurface, textTexture, font);
 
 		SDL_RenderPresent(renderer);
 
@@ -185,50 +165,49 @@ int main(int argc, char* argv[]) {
 	SDL_DestroyRenderer(renderer);
 	SDL_DestroyWindow(window);
 	SDL_Quit();
+	closesocket(clientSocket);
 	WSACleanup();
 
 	return 0;
-}
-
-void GetUserMessage(SDL_Event event, Message* message_p) {
-	char key_val = event.text.text[0];
-	printf("\n%d\n", key_val);
-	if (key_val == 1 && message_p->length > 0) { // BACKSPACE INPUT
-		if (DEBUG) {
-			printf("you son of bitch, im in\n");
-		}
-		message_p->text[--message_p->length] = '\0';
-	}
-	else if (key_val != 1) { // REGULAR INPUT
-		message_p->text[message_p->length++] = key_val;
-		message_p->text[message_p->length] = '\0';
-	}
-	printf("length: %d", message_p->length);
-}
-
-void DrawTextFont(SDL_Renderer* renderer, SDL_Surface *textSurface, SDL_Texture *textTexture, TTF_Font *font, Message* message_p) {
-	if (message_p->length < 1) {
-		textSurface = TTF_RenderText_Solid(font, "Enter a message", TEXT_COLOR);
-	}
-	else {
-		textSurface = TTF_RenderText_Solid(font, message_p->text, TEXT_COLOR);
-	}
-	SDL_Rect textRect = { TextPosX, TextPosY, textSurface->w, textSurface->h }; // Position of the text
-
-	textTexture = SDL_CreateTextureFromSurface(renderer, textSurface);
-	SDL_RenderCopy(renderer, textTexture, NULL, &textRect);
-}
-
-void DrawButton(SDL_Renderer* renderer) {
-	SDL_Rect button = { .x = 800, .y = 600, .w = BUTTON_WIDTH, .h = BUTTON_HEIGHT};
-	SDL_SetRenderDrawColor(renderer, 0, 0xff, 0, 0);
-	SDL_RenderFillRect(renderer, &button);
 }
 
 void SendMessageFont(Message* message_p, SOCKET clientfd) {
 	send(clientfd, &(message_p->text[0]), message_p->length + 1, SOCK_STREAM);
 }
 
-void FlushMessage(Message* message_p) {
+DWORD WINAPI ReceiveMessage(LPVOID serverfd) {
+	SOCKET server_fd = (SOCKET)serverfd;
+	while (1) {
+		char buffer[1024];
+		Message receivedMessage = { .length = NULL, .text = NULL, .timestamp = NULL };
+		int receivedbytes = recv(server_fd, buffer, sizeof(buffer), 0);
+		if (receivedbytes > 0) {
+			receivedMessageList[receivedMessagesCount].length = receivedbytes;
+			if (receivedbytes < sizeof(buffer)) {
+				buffer[receivedbytes] = '\0';
+				printf("gotten: %s\n", buffer);
+				memcpy(receivedMessageList[receivedMessagesCount].text, buffer, receivedbytes);
+				//receivedMessageList[receivedMessagesCount].text[receivedbytes] = '\0';
+				printf("into list: %s\n", receivedMessageList[receivedMessagesCount].text);
+				receivedMessageList[receivedMessagesCount].timestamp = time(NULL);
 
+				receivedMessagesCount++;
+			}
+			else {
+				perror("buffer overflow, from ReceiveMessageAndShow");
+				exit(1);
+			}
+		}
+	}
+}
+
+void PrintReceivedMessages(SDL_Renderer* renderer, SDL_Surface* textSurface, SDL_Texture* textTexture, TTF_Font* font) {
+	for (int i = 0; i < receivedMessagesCount; ++i) {
+		SDL_Color TEXT_COLOR = { 0, 0, 0xA5 };
+		textSurface = TTF_RenderText_Solid(font, receivedMessageList[i].text, TEXT_COLOR);
+		SDL_Rect textRect = { INIT_TEXT_POSX, 48 + i * LINE_LENGTH, textSurface->w, textSurface->h };
+		textTexture = SDL_CreateTextureFromSurface(renderer, textSurface);
+
+		SDL_RenderCopy(renderer, textTexture, NULL, &textRect);
+	}
 }
