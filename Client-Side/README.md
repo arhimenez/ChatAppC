@@ -7,3 +7,15 @@ Creating a chat application with C. client-server model. user will have an SDL2 
     after doing that, need to change 'DrawText()' function as needed (as it seems adding a for loop, iterating over the number of lines, and inserting each row to TTF function)
 
 *   create a clickable button to send the message onward to the server -> initilizing DrawButton(), ButtonLogic(). (sockets used in Button Logic)
+
+
+##DONE UP TILL HERE
+
+<br>
+
+
+#### trying to improve the gui by:
+
+*    maybe adding a picture as background.
+*    print the ip of each message sender stitched with the message.
+*    add time stamps for messages.
